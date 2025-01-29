@@ -7,13 +7,22 @@ import ray
 import torch
 from ray.util.placement_group import PlacementGroup, placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-
+import sys
+# print("1Current PYTHONPATH:")
+# for path in sys.path:
+#     print(path)
 from openrlhf.models import Actor, get_llm_for_sequence_regression
 from openrlhf.utils import DeepspeedStrategy, get_tokenizer
-
+# print("2Current PYTHONPATH:")
+# for path in sys.path:
+#     print(path)
 
 class DistributedTorchRayActor:
     def __init__(self, world_size, rank, local_rank, master_addr, master_port):
+        # Create worker actors
+        # print("TCurrent PYTHONPATH:")
+        # for path in sys.path:
+        #     print(path)
         logging.basicConfig(
             format="%(asctime)s %(levelname)-8s %(message)s",
             level=logging.INFO,
@@ -137,6 +146,62 @@ class RewardModelRayActor(BasePPORole):
 
     def empty_cache(self) -> None:
         torch.cuda.empty_cache()
+        
+        
+@ray.remote(num_gpus=1)
+class RewardModelRayActorPRM(BasePPORole):
+    def init_model_from_pretrained(self, strategy: DeepspeedStrategy, pretrain):
+        self._setup_distributed(strategy)
+        
+        # For PRM, we do not use regression model now
+        # model = get_llm_for_sequence_regression(
+        #     pretrain,
+        #     "reward",
+        #     normalize_reward=strategy.args.normalize_reward,
+        #     use_flash_attention_2=strategy.args.flash_attn,
+        #     bf16=strategy.args.bf16,
+        #     load_in_4bit=strategy.args.load_in_4bit,
+        #     ds_config=strategy.get_ds_eval_config(offload=strategy.args.ref_reward_offload),
+        #     value_head_prefix=strategy.args.value_head_prefix,
+        #     packing_samples=strategy.args.packing_samples,
+        # )
+        
+        model = Actor(
+            pretrain,
+            use_flash_attention_2=strategy.args.flash_attn,
+            bf16=strategy.args.bf16,
+            load_in_4bit=strategy.args.load_in_4bit,
+            lora_rank=strategy.args.lora_rank,
+            lora_alpha=strategy.args.lora_alpha,
+            target_modules=strategy.args.target_modules,
+            lora_dropout=strategy.args.lora_dropout,
+            ds_config=strategy.get_ds_train_config(is_actor=True),
+            #packing_samples=args.packing_samples,
+        )
+        
+        
+        strategy.print(model)
+        # strategy.print("reward normalization status: {}".format(strategy.args.normalize_reward))
+        # strategy.print("mean: {}, std {}".format(model.mean, model.std))
+
+        if strategy.args.ref_reward_offload:
+            model._offload = True
+
+        self.model = self.strategy.prepare(model, is_rlhf=True)
+        self.model.eval()
+
+    def forward(
+        self, sequences: torch.LongTensor, attention_mask: Optional[torch.Tensor] = None, packed_seq_lens=None
+    ) -> torch.Tensor:
+        device = torch.cuda.current_device()
+        
+        candidate_tokens = [128003, 128004] # only for llama 3, remember to change for other model
+        with torch.no_grad():
+            reward = self.model(sequences.to(device),  attention_mask=attention_mask.to(device), packed_seq_lens=packed_seq_lens, return_output=True).logits[:,:,candidate_tokens]
+        return reward.to("cpu")
+
+    def empty_cache(self) -> None:
+        torch.cuda.empty_cache()
 
 
 class PPORayActorGroup:
@@ -207,7 +272,12 @@ class PPORayActorGroup:
         self._actor_handlers = [master_actor]
 
         # Create worker actors
+        # print("Current PYTHONPATH:")
+        # for path in sys.path:
+        #     print(path)
+        # print("master_actor", master_actor)
         if world_size > 1:
+            import openrlhf
             master_addr, master_port = ray.get(master_actor.get_master_addr_port.remote())
             for rank in range(1, world_size):
                 local_rank = rank % self._num_gpus_per_node
@@ -262,25 +332,25 @@ class PPORayActorGroup:
 
         Returns:
             List: list of remote object refs.
-        """
-        assert (
-            (remote_rm_urls and len(remote_rm_urls) == 1)
-            or (reward_model_groups and len(reward_model_groups) == 1)
-            or reward_fn is not None
-        ), "reward_fn must be specified if using multiple reward models"
-
-        critic_actors = critic_model_group._actor_handlers
+        # """
+        # assert (
+        #     (remote_rm_urls and len(remote_rm_urls) == 1)
+        #     or (reward_model_groups and len(reward_model_groups) == 1)
+        #     or reward_fn is not None  
+        # ), "reward_fn must be specified if using multiple reward models"
+        
+        critic_actors = critic_model_group._actor_handlers if critic_model_group else None
         initial_actors = initial_model_group._actor_handlers
 
         refs = []
         # TODO(wuxibin): actor model choose critic/reward/initial model in a
         # round robin fashion, implement more efficient dispatching strategy.
         for i, actor in enumerate(self._actor_handlers):
-            critic_actor = critic_actors[i % len(critic_actors)]
+            critic_actor = critic_actors[i % len(critic_actors)] if critic_actors else None
             initial_actor = initial_actors[i % len(initial_actors)]
 
             reward_actors = []
-            if not remote_rm_urls:
+            if not remote_rm_urls and reward_model_groups is not None:
                 for reward_model_group in reward_model_groups:
                     actors = reward_model_group._actor_handlers
                     reward_actors.append(actors[i % len(actors)])
@@ -294,7 +364,7 @@ class PPORayActorGroup:
                     reward_fn=reward_fn,
                     vllm_engines=vllm_engines,
                     # whether this actor should triger corresponding critic model training
-                    critic_train_remote=(i < len(critic_actors)),
+                    critic_train_remote=(i < len(critic_actors)) if critic_actor else None,
                 )
             )
 

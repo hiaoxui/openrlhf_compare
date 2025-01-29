@@ -66,6 +66,7 @@ def init_process_group(
         group_name=group_name,
         **{pg_options_param_name: pg_options},
         timeout=timeout,
+         # timeout=timedelta(seconds=60)，
     )
 
     _world.pg_group_ranks[pg] = {i: i for i in range(world_size)}

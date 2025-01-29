@@ -10,8 +10,77 @@ from transformers.trainer import get_scheduler
 
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
-from openrlhf.trainer import PPOTrainer
+from openrlhf.trainer import PPOTrainerPRM800K_BOX
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
+
+import os
+
+
+from torch.utils.data import Dataset
+from tqdm import tqdm
+#from .utils import exist_and_not_none
+
+
+def preprocess_data_box(data, input_template=None, input_key="input", apply_chat_template=None) -> str:
+    if apply_chat_template:
+        chat = data[input_key]
+        if isinstance(chat, str):
+            chat = [{"role": "user", "content": chat}]
+        prompt = apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
+    else:
+        prompt = data[input_key]
+        
+        truth_answer = data["ground_truth_answer"]
+        target = data["target"]
+        if input_template:
+            prompt = input_template.format(prompt)
+        return {"input": prompt, "target": target, "answer": truth_answer}
+    return prompt
+
+
+class PromptDatasetBox(Dataset):
+    """
+    Dataset for PPO model
+
+    Args:
+        dataset: dataset for PPO model
+        tokenizer: tokenizer for PPO model
+        max_length: max length of input
+    """
+
+    def __init__(
+        self,
+        dataset,
+        tokenizer,
+        strategy,
+        input_template=None,
+    ) -> None:
+        super().__init__()
+        self.strategy = strategy
+        self.tokenizer = tokenizer
+
+        # chat_template
+        self.input_template = input_template
+        input_key = getattr(self.strategy.args, "input_key", None)
+        apply_chat_template = getattr(self.strategy.args, "apply_chat_template", False)
+
+        if apply_chat_template:
+            apply_chat_template = self.tokenizer.apply_chat_template
+
+        self.prompts = []
+        for data in tqdm(dataset, desc="Preprocessing data", disable=not self.strategy.is_rank_0()):
+            prompt = preprocess_data_box(data, input_template, input_key, apply_chat_template)
+            self.prompts.append(prompt)
+
+    def __len__(self):
+        length = len(self.prompts)
+        return length
+
+    def __getitem__(self, idx):
+        return self.prompts[idx]
+
+
+os.environ['OMPI_COMM_WORLD_LOCAL_RANK'] = os.environ.get('LOCAL_RANK')
 
 
 def train(args):
@@ -56,22 +125,42 @@ def train(args):
         critic = None
 
     if not args.remote_rm_url:
-        reward_model = get_llm_for_sequence_regression(
+        # reward_model = get_llm_for_sequence_regression(
+        #     args.reward_pretrain,
+        #     "reward",
+        #     normalize_reward=args.normalize_reward,
+        #     use_flash_attention_2=args.flash_attn,
+        #     bf16=args.bf16,
+        #     load_in_4bit=args.load_in_4bit,
+        #     ds_config=strategy.get_ds_train_config(is_actor=False),
+        #     value_head_prefix=args.value_head_prefix,
+        # )
+
+        ## replace with prm model
+
+        reward_model = Actor(
             args.reward_pretrain,
-            "reward",
-            normalize_reward=args.normalize_reward,
             use_flash_attention_2=args.flash_attn,
             bf16=args.bf16,
             load_in_4bit=args.load_in_4bit,
-            ds_config=strategy.get_ds_train_config(is_actor=False),
-            value_head_prefix=args.value_head_prefix,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            target_modules=args.target_modules,
+            lora_dropout=args.lora_dropout,
+            ds_config=strategy.get_ds_train_config(is_actor=True),
+            #packing_samples=args.packing_samples,
         )
+
+
+
+
     else:
         reward_model = None
 
     strategy.print("reward normalization status: {}".format(args.normalize_reward))
     if reward_model:
-        strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
+        pass
+        #strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
 
     strategy.print(actor)
     strategy.print(critic)
@@ -131,7 +220,7 @@ def train(args):
         train_split=args.prompt_split,
     )
     prompts_data = prompts_data.select(range(min(args.max_samples, len(prompts_data))))
-    prompts_dataset = PromptDataset(prompts_data, tokenizer, strategy, input_template=args.input_template)
+    prompts_dataset = PromptDatasetBox(prompts_data, tokenizer, strategy, input_template=args.input_template)
 
     if args.pretrain_data:
         pretrain_data = blending_datasets(
@@ -227,7 +316,7 @@ def train(args):
     os.makedirs(args.save_path, exist_ok=True)
 
     # configure Trainer
-    trainer = PPOTrainer(
+    trainer = PPOTrainerPRM800K_BOX(
         strategy,
         actor,
         critic,
@@ -264,6 +353,8 @@ def train(args):
         # remote reward model
         remote_rm_url=args.remote_rm_url,
     )
+    
+    #strategy.print(f"Trainer Setup!")
 
     trainer.fit(args, prompts_dataloader, pretrain_dataloader, consumed_samples, num_update_steps_per_episodes)
 

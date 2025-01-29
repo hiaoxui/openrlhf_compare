@@ -10,8 +10,12 @@ from transformers.trainer import get_scheduler
 
 from openrlhf.datasets import PromptDataset, SFTDataset
 from openrlhf.models import Actor, get_llm_for_sequence_regression
-from openrlhf.trainer import PPOTrainer
+from openrlhf.trainer import PPOTrainerORM800K
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
+
+import os
+
+os.environ['OMPI_COMM_WORLD_LOCAL_RANK'] = os.environ.get('LOCAL_RANK')
 
 
 def train(args):
@@ -31,6 +35,7 @@ def train(args):
         target_modules=args.target_modules,
         lora_dropout=args.lora_dropout,
         ds_config=strategy.get_ds_train_config(is_actor=True),
+        #device_map="auto",
     )
 
     if args.actor_init_on_gpu:
@@ -56,22 +61,42 @@ def train(args):
         critic = None
 
     if not args.remote_rm_url:
-        reward_model = get_llm_for_sequence_regression(
+        # reward_model = get_llm_for_sequence_regression(
+        #     args.reward_pretrain,
+        #     "reward",
+        #     normalize_reward=args.normalize_reward,
+        #     use_flash_attention_2=args.flash_attn,
+        #     bf16=args.bf16,
+        #     load_in_4bit=args.load_in_4bit,
+        #     ds_config=strategy.get_ds_train_config(is_actor=False),
+        #     value_head_prefix=args.value_head_prefix,
+        # )
+
+        ## replace with prm model
+
+        reward_model = Actor(
             args.reward_pretrain,
-            "reward",
-            normalize_reward=args.normalize_reward,
             use_flash_attention_2=args.flash_attn,
             bf16=args.bf16,
             load_in_4bit=args.load_in_4bit,
-            ds_config=strategy.get_ds_train_config(is_actor=False),
-            value_head_prefix=args.value_head_prefix,
+            lora_rank=args.lora_rank,
+            lora_alpha=args.lora_alpha,
+            target_modules=args.target_modules,
+            lora_dropout=args.lora_dropout,
+            ds_config=strategy.get_ds_train_config(is_actor=True),
+            #packing_samples=args.packing_samples,
         )
+
+
+
+
     else:
         reward_model = None
 
     strategy.print("reward normalization status: {}".format(args.normalize_reward))
     if reward_model:
-        strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
+        pass
+        #strategy.print("mean: {}, std {}".format(reward_model.mean, reward_model.std))
 
     strategy.print(actor)
     strategy.print(critic)
@@ -227,7 +252,7 @@ def train(args):
     os.makedirs(args.save_path, exist_ok=True)
 
     # configure Trainer
-    trainer = PPOTrainer(
+    trainer = PPOTrainerORM800K(
         strategy,
         actor,
         critic,
@@ -264,6 +289,8 @@ def train(args):
         # remote reward model
         remote_rm_url=args.remote_rm_url,
     )
+    
+    #strategy.print(f"Trainer Setup!")
 
     trainer.fit(args, prompts_dataloader, pretrain_dataloader, consumed_samples, num_update_steps_per_episodes)
 

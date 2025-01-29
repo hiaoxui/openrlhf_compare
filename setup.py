@@ -77,7 +77,7 @@ setup(
         "vllm": ["vllm==0.4.2"],
         "vllm_latest": ["vllm>0.4.2"],
     },
-    python_requires=">=3.10",
+    python_requires=">=3.9",
     classifiers=[
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
@@ -85,5 +85,5 @@ setup(
         "Topic :: Scientific/Engineering :: Artificial Intelligence",
         "Topic :: System :: Distributed Computing",
     ],
-    cmdclass={"bdist_wheel": bdist_wheel},
+    #cmdclass={"bdist_wheel": bdist_wheel},
 )

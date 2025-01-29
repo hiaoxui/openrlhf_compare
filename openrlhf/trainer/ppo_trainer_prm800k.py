@@ -16,10 +16,10 @@ from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss
 from openrlhf.models.utils import masked_mean
 from openrlhf.utils.distributed_sampler import DistributedSampler
 
-from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer
+from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer, NaiveExperienceMakerORM800K, NaiveExperienceMakerPRM800K
 
 
-class PPOTrainer(ABC):
+class PPOTrainerPRM800K(ABC):
     """
     Trainer for Proximal Policy Optimization (PPO) algorithm.
 
@@ -135,7 +135,7 @@ class PPOTrainer(ABC):
         else:
             self.kl_ctl = FixedKLController(init_kl_coef)
 
-        self.experience_maker = NaiveExperienceMaker(
+        self.experience_maker = NaiveExperienceMakerPRM800K(
             actor,
             critic,
             reward_model,

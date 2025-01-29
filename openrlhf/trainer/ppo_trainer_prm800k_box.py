@@ -16,10 +16,10 @@ from openrlhf.models import Actor, GPTLMLoss, PolicyLoss, ValueLoss
 from openrlhf.models.utils import masked_mean
 from openrlhf.utils.distributed_sampler import DistributedSampler
 
-from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer
+from .ppo_utils import AdaptiveKLController, Experience, FixedKLController, NaiveExperienceMaker, NaiveReplayBuffer, NaiveExperienceMakerORM800K, NaiveExperienceMakerPRM800K, NaiveExperienceMakerPRM800K_BOX
 
 
-class PPOTrainer(ABC):
+class PPOTrainerPRM800K_BOX(ABC):
     """
     Trainer for Proximal Policy Optimization (PPO) algorithm.
 
@@ -135,7 +135,7 @@ class PPOTrainer(ABC):
         else:
             self.kl_ctl = FixedKLController(init_kl_coef)
 
-        self.experience_maker = NaiveExperienceMaker(
+        self.experience_maker = NaiveExperienceMakerPRM800K_BOX(
             actor,
             critic,
             reward_model,
@@ -225,8 +225,14 @@ class PPOTrainer(ABC):
             )
 
             for rand_prompts in self.prompts_dataloader:
+                rand_targets = rand_prompts["target"]
+                rand_answer = rand_prompts["answer"]
+                rand_prompts = rand_prompts["input"]
+                
+                #print("rand_prompts", rand_prompts)
+                #print("rabd_answers", rand_answer)
                 for i, experience in enumerate(
-                    self.experience_maker.make_experience_list(rand_prompts, **self.generate_kwargs)
+                    self.experience_maker.make_experience_list(rand_prompts, rand_answer, **self.generate_kwargs)
                 ):
                     if i == 0:
                         output = self.tokenizer.batch_decode(
@@ -501,6 +507,7 @@ class PPOTrainer(ABC):
             self._save_checkpoint(args, tag, client_states)
 
     def _save_checkpoint(self, args, tag, client_states):
+        # Original checkpoint saving for training resumption
         self.strategy.save_ckpt(
             self.actor.model,
             os.path.join(args.ckpt_path, "_actor"),
@@ -513,3 +520,19 @@ class PPOTrainer(ABC):
             self.strategy.save_ckpt(
                 self.critic, os.path.join(args.ckpt_path, "_critic"), tag, args.max_ckpt_num, args.max_ckpt_mem
             )
+
+        # Save in Hugging Face format
+        if self.strategy.is_rank_0():  # Only save on main process
+            save_path = os.path.join(args.ckpt_path, "_actor", "hf_checkpoint",  tag)
+            os.makedirs(save_path, exist_ok=True)
+            
+            # Save model weights
+            self.actor.model.save_pretrained(save_path)
+            
+            # Save tokenizer if available
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(save_path)
+            
+            # Save training arguments
+            if hasattr(args, 'to_json_file'):
+                args.to_json_file(os.path.join(save_path, "training_args.json"))

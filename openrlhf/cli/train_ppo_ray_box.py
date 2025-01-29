@@ -10,12 +10,15 @@ from ray.util.placement_group import placement_group
 import subprocess
 import sys
 
+
 from openrlhf.trainer.ray import (
     ActorModelRayActor,
+    ActorModelRayActorBOX,
     CriticModelRayActor,
     PPORayActorGroup,
     ReferenceModelRayActor,
     RewardModelRayActor,
+    RewardModelRayActorPRM,
     create_vllm_engines,
 )
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
@@ -78,7 +81,7 @@ def train(args):
     actor_model = PPORayActorGroup(
         args.actor_num_nodes,
         args.actor_num_gpus_per_node,
-        ActorModelRayActor,
+        ActorModelRayActorBOX,
         pg=pg,
         num_gpus_per_actor=0.75 if pg else 1,
     )
@@ -118,7 +121,7 @@ def train(args):
         critic_model = None
 
     # multiple reward models
-    if not args.remote_rm_url:
+    if not args.remote_rm_url and args.reward_pretrain:
         reward_pretrains = args.reward_pretrain.split(",")
         reward_models = []
         for _ in reward_pretrains:
@@ -126,7 +129,7 @@ def train(args):
                 PPORayActorGroup(
                     args.reward_num_nodes,
                     args.reward_num_gpus_per_node,
-                    RewardModelRayActor,
+                    RewardModelRayActorPRM,
                     pg=pg,
                     num_gpus_per_actor=0.25 if pg else 1,
                 )
@@ -138,7 +141,7 @@ def train(args):
     refs = []
     refs.extend(ref_model.async_init_model_from_pretrained(strategy, args.pretrain))
     refs.extend(actor_model.async_init_model_from_pretrained(strategy, args.pretrain))
-    if not args.remote_rm_url:
+    if not args.remote_rm_url and args.reward_pretrain:
         for reward_model, reward_pretrain in zip(reward_models, reward_pretrains):
             refs.extend(reward_model.async_init_model_from_pretrained(strategy, reward_pretrain))
 
@@ -358,14 +361,16 @@ if __name__ == "__main__":
     parser.add_argument("--perf", action="store_true", default=False)
 
     args = parser.parse_args()
-    
 
 
     if args.advantage_estimator not in ["gae"]:
         args.critic_pretrain = None
     elif args.critic_pretrain is None:
         if not args.remote_rm_url:
-            args.critic_pretrain = args.reward_pretrain.split(",")[0]
+            if args.reward_pretrain is not None:
+                args.critic_pretrain = args.reward_pretrain.split(",")[0]
+            else:
+                args.critic_pretrain = args.pretrain
         else:
             args.critic_pretrain = args.pretrain
 

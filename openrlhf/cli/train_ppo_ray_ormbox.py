@@ -12,10 +12,14 @@ import sys
 
 from openrlhf.trainer.ray import (
     ActorModelRayActor,
+    ActorModelRayActorBOX,
+    ActorModelRayActorPRMBOX,
+    ActorModelRayActorORMBOX,
     CriticModelRayActor,
     PPORayActorGroup,
     ReferenceModelRayActor,
     RewardModelRayActor,
+    RewardModelRayActorPRM,
     create_vllm_engines,
 )
 from openrlhf.utils import blending_datasets, get_strategy, get_tokenizer
@@ -78,7 +82,7 @@ def train(args):
     actor_model = PPORayActorGroup(
         args.actor_num_nodes,
         args.actor_num_gpus_per_node,
-        ActorModelRayActor,
+        ActorModelRayActorORMBOX,
         pg=pg,
         num_gpus_per_actor=0.75 if pg else 1,
     )
@@ -126,7 +130,7 @@ def train(args):
                 PPORayActorGroup(
                     args.reward_num_nodes,
                     args.reward_num_gpus_per_node,
-                    RewardModelRayActor,
+                    RewardModelRayActorPRM,
                     pg=pg,
                     num_gpus_per_actor=0.25 if pg else 1,
                 )
